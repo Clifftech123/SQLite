@@ -60,4 +60,31 @@ mod tests {
     fn file_offset_uses_page_size() {
         assert_eq!(file_offset(2), (PAGE_SIZE * 2) as u64);
     }
+    #[test]
+    fn clear_zeroes_a_dirty_page() {
+        let mut page = new_page();
+        write_range(&mut page, 0, &[1, 2, 3]);
+        clear(&mut page);
+        assert!(page.iter().all(|byte| *byte == 0));
+    }
+    #[test]
+    fn copy_into_duplicates_contents() {
+        let mut source = new_page();
+        write_range(&mut source, 0, &[9, 8, 7]);
+        let mut destination = new_page();
+        copy_into(&mut destination, &source);
+        assert_eq!(read_range(&destination, 0, 3), &[9, 8, 7]);
+    }
+    #[test]
+    #[should_panic(expected = "page range exceeds PAGE_SIZE")]
+    fn write_range_past_page_end_panics() {
+        let mut page = new_page();
+        write_range(&mut page, PAGE_SIZE - 1, &[1, 2]);
+    }
+    #[test]
+    #[should_panic]
+    fn write_range_offset_overflow_panics() {
+        let mut page = new_page();
+        write_range(&mut page, usize::MAX, &[1]);
+    }
 }

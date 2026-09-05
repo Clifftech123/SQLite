@@ -152,3 +152,153 @@ fn write_leaf_cell(page: &mut [u8; PAGE_SIZE], cell_num: u32, key: u32, value: &
     let value_start = leaf_node_cell_offset(cell_num) + LEAF_NODE_VALUE_OFFSET;
     value.serialize_into(&mut page[value_start..value_start + LEAF_NODE_VALUE_SIZE]);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::btree::node::{get_node_parent, get_node_type, is_node_root};
+    use crate::storage::page::new_page;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn temp_table(name: &str) -> (Table, std::path::PathBuf) {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "sqlite_leaf_test_{name}_{}_{n}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let table = Table::open(path.to_str().unwrap()).expect("open should succeed");
+        (table, path)
+    }
+
+    impl Drop for TempGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    struct TempGuard(std::path::PathBuf);
+
+    #[test]
+    fn num_cells_round_trips() {
+        let mut page = new_page();
+        assert_eq!(leaf_node_num_cells(&page), 0);
+        set_leaf_node_num_cells(&mut page, 7);
+        assert_eq!(leaf_node_num_cells(&page), 7);
+    }
+
+    #[test]
+    fn next_leaf_round_trips() {
+        let mut page = new_page();
+        set_leaf_node_next_leaf(&mut page, 3);
+        assert_eq!(leaf_node_next_leaf(&page), 3);
+    }
+
+    #[test]
+    fn initialize_leaf_node_sets_defaults() {
+        let mut page = new_page();
+        initialize_leaf_node(&mut page);
+        assert_eq!(get_node_type(&page), NodeType::Leaf);
+        assert!(!is_node_root(&page));
+        assert_eq!(leaf_node_num_cells(&page), 0);
+        assert_eq!(leaf_node_next_leaf(&page), 0);
+        assert_eq!(get_node_parent(&page), INVALID_PAGE_NUM);
+    }
+
+    #[test]
+    fn key_and_value_round_trip() {
+        let mut page = new_page();
+        initialize_leaf_node(&mut page);
+        let row = Row::new(4, "carol", "carol@example.com");
+        write_leaf_cell(&mut page, 0, 4, &row);
+        assert_eq!(leaf_node_key(&page, 0), 4);
+        assert_eq!(Row::deserialize_from(leaf_node_value_slice(&page, 0)), row);
+    }
+
+    #[test]
+    fn find_on_empty_leaf_returns_position_zero() {
+        let mut page = new_page();
+        initialize_leaf_node(&mut page);
+        let (table, path) = temp_table("find_empty");
+        let _guard = TempGuard(path);
+        let mut pager = table.pager;
+        *pager.get_page(0) = *page;
+        assert_eq!(leaf_node_find(&mut pager, 0, 42), (0, 0));
+    }
+
+    #[test]
+    fn find_returns_exact_match_index() {
+        let (table, path) = temp_table("find_exact");
+        let _guard = TempGuard(path);
+        let mut pager = table.pager;
+        let page = pager.get_page(0);
+        initialize_leaf_node(page);
+        for (i, key) in [10u32, 20, 30, 40].into_iter().enumerate() {
+            set_leaf_node_key(page, i as u32, key);
+        }
+        set_leaf_node_num_cells(page, 4);
+        assert_eq!(leaf_node_find(&mut pager, 0, 30), (0, 2));
+    }
+
+    #[test]
+    fn find_returns_sorted_insertion_point_when_missing() {
+        let (table, path) = temp_table("find_missing");
+        let _guard = TempGuard(path);
+        let mut pager = table.pager;
+        let page = pager.get_page(0);
+        initialize_leaf_node(page);
+        for (i, key) in [10u32, 20, 30, 40].into_iter().enumerate() {
+            set_leaf_node_key(page, i as u32, key);
+        }
+        set_leaf_node_num_cells(page, 4);
+        assert_eq!(leaf_node_find(&mut pager, 0, 25), (0, 2));
+        assert_eq!(leaf_node_find(&mut pager, 0, 5), (0, 0));
+        assert_eq!(leaf_node_find(&mut pager, 0, 100), (0, 4));
+    }
+
+    #[test]
+    fn leaf_node_insert_appends_in_sorted_position() {
+        let (mut table, path) = temp_table("insert_sorted");
+        let _guard = TempGuard(path);
+        let cursor0 = crate::btree::cursor::Cursor {
+            page_num: 0,
+            cell_num: 0,
+            end_of_table: false,
+        };
+        table.leaf_node_insert(&cursor0, 10, &Row::new(10, "a", "a@x.com"));
+        let cursor1 = crate::btree::cursor::Cursor {
+            page_num: 0,
+            cell_num: 1,
+            end_of_table: false,
+        };
+        table.leaf_node_insert(&cursor1, 20, &Row::new(20, "b", "b@x.com"));
+        let cursor_mid = crate::btree::cursor::Cursor {
+            page_num: 0,
+            cell_num: 1,
+            end_of_table: false,
+        };
+        table.leaf_node_insert(&cursor_mid, 15, &Row::new(15, "c", "c@x.com"));
+
+        let page = table.pager.get_page(0);
+        assert_eq!(leaf_node_num_cells(page), 3);
+        assert_eq!(leaf_node_key(page, 0), 10);
+        assert_eq!(leaf_node_key(page, 1), 15);
+        assert_eq!(leaf_node_key(page, 2), 20);
+    }
+
+    #[test]
+    #[should_panic(expected = "leaf page is full")]
+    fn leaf_node_insert_past_capacity_panics() {
+        let (mut table, path) = temp_table("insert_full");
+        let _guard = TempGuard(path);
+        for i in 0..(LEAF_NODE_MAX_CELLS as u32 + 1) {
+            let cursor = crate::btree::cursor::Cursor {
+                page_num: 0,
+                cell_num: i,
+                end_of_table: false,
+            };
+            table.leaf_node_insert(&cursor, i, &Row::new(i, "u", "e@x.com"));
+        }
+    }
+}

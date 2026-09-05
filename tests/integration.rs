@@ -1,5 +1,8 @@
 // These files are kept in a folder so the test suite stays organized.
 // The path attributes make Cargo compile them as one integration-test crate.
+#[path = "integration/common.rs"]
+mod common;
+
 #[path = "integration/btree_growth.rs"]
 mod btree_growth;
 

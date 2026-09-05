@@ -121,3 +121,127 @@ impl Table {
         set_node_parent(self.pager.get_page(right), self.root_page_num);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::row::Row;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn temp_table(name: &str) -> (Table, std::path::PathBuf) {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "sqlite_tree_test_{name}_{}_{n}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let table = Table::open(path.to_str().unwrap()).expect("open should succeed");
+        (table, path)
+    }
+
+    struct TempGuard(std::path::PathBuf);
+    impl Drop for TempGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn open_initializes_a_new_file_with_an_empty_leaf_root() {
+        let (mut table, path) = temp_table("open_new");
+        let _guard = TempGuard(path);
+        let page = table.pager.get_page(0);
+        assert_eq!(get_node_type(page), NodeType::Leaf);
+        assert!(is_node_root(page));
+        assert_eq!(leaf_node_num_cells(page), 0);
+    }
+
+    #[test]
+    fn open_does_not_reinitialize_an_existing_file() {
+        let (mut table, path) = temp_table("open_existing");
+        let cursor = table.find(1);
+        table.leaf_node_insert(&cursor, 1, &Row::new(1, "a", "a@x.com"));
+        table.pager.flush(0).unwrap();
+        drop(table);
+
+        let mut reopened = Table::open(path.to_str().unwrap()).unwrap();
+        let _guard = TempGuard(path);
+        assert_eq!(leaf_node_num_cells(reopened.pager.get_page(0)), 1);
+    }
+
+    #[test]
+    fn find_on_empty_table_returns_start_of_leaf() {
+        let (mut table, path) = temp_table("find_empty");
+        let _guard = TempGuard(path);
+        let cursor = table.find(5);
+        assert_eq!(cursor.page_num, 0);
+        assert_eq!(cursor.cell_num, 0);
+    }
+
+    #[test]
+    fn start_on_empty_table_is_end_of_table() {
+        let (mut table, path) = temp_table("start_empty");
+        let _guard = TempGuard(path);
+        let cursor = table.start();
+        assert!(cursor.end_of_table);
+    }
+
+    #[test]
+    fn start_on_nonempty_table_points_at_first_row() {
+        let (mut table, path) = temp_table("start_nonempty");
+        let _guard = TempGuard(path);
+        let cursor = table.find(1);
+        table.leaf_node_insert(&cursor, 1, &Row::new(1, "a", "a@x.com"));
+
+        let cursor = table.start();
+        assert!(!cursor.end_of_table);
+        assert_eq!(cursor.cell_num, 0);
+    }
+
+    #[test]
+    fn get_unused_page_num_matches_pager_page_count() {
+        let (mut table, path) = temp_table("unused_page");
+        let _guard = TempGuard(path);
+        assert_eq!(table.get_unused_page_num(), table.pager.num_pages);
+        table.pager.get_page(3);
+        assert_eq!(table.get_unused_page_num(), table.pager.num_pages);
+    }
+
+    #[test]
+    fn create_new_root_splits_a_leaf_root_into_an_internal_root() {
+        let (mut table, path) = temp_table("create_new_root");
+        let _guard = TempGuard(path);
+
+        // Old (leaf) root gets some rows before the split.
+        for key in [1u32, 2, 3] {
+            let cursor = table.find(key);
+            table.leaf_node_insert(&cursor, key, &Row::new(key, "u", "e@x.com"));
+        }
+
+        // Manually prepare a second leaf holding the "right" half, as the
+        // (currently unimplemented) leaf-split logic would.
+        let right_page_num = table.get_unused_page_num();
+        {
+            let right_page = table.pager.get_page(right_page_num);
+            initialize_leaf_node(right_page);
+            set_leaf_node_num_cells(right_page, 1);
+            set_leaf_node_key(right_page, 0, 10);
+        }
+
+        table.create_new_root(right_page_num);
+
+        let root = table.pager.get_page(table.root_page_num);
+        assert_eq!(get_node_type(root), NodeType::Internal);
+        assert!(is_node_root(root));
+        assert_eq!(internal_node_num_keys(root), 1);
+        assert_eq!(internal_node_right_child(root), right_page_num);
+
+        let left_child = internal_node_child(root, 0);
+        assert_eq!(internal_node_key(root, 0), 3); // old root's max key
+        assert_eq!(get_node_type(table.pager.get_page(left_child)), NodeType::Leaf);
+        assert!(!is_node_root(table.pager.get_page(left_child)));
+        assert_eq!(leaf_node_num_cells(table.pager.get_page(left_child)), 3);
+    }
+}

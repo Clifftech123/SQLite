@@ -68,4 +68,29 @@ mod tests {
             "invalid database input: ID cannot be negative"
         );
     }
+
+    #[test]
+    fn corrupt_database_has_readable_message() {
+        let error = DatabaseError::corrupt("bad header");
+        assert_eq!(error.to_string(), "corrupt database: bad header");
+    }
+
+    #[test]
+    fn page_out_of_bounds_has_readable_message() {
+        let error = DatabaseError::PageOutOfBounds {
+            page_number: 5,
+            maximum: 4,
+        };
+        assert_eq!(
+            error.to_string(),
+            "page 5 is outside the maximum of 4 pages"
+        );
+    }
+
+    #[test]
+    fn io_error_is_wrapped_and_displayed() {
+        let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
+        let error: DatabaseError = io_error.into();
+        assert!(error.to_string().starts_with("database file error:"));
+    }
 }
