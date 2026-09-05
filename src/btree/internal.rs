@@ -1,4 +1,16 @@
-//! B-tree internal-node layout and operations.
-//!
-//! Put internal-node constants, child/key access, lookup, insertion, and
-//! internal-node splitting here.
+use crate::btree::node::COMMON_NODE_HEADER_SIZE;
+
+// Internal Node Header Layout
+pub const INTERNAL_NODE_NUM_KEYS_SIZE: usize = 4;
+pub const INTERNAL_NODE_NUM_KEYS_OFFSET: usize = COMMON_NODE_HEADER_SIZE;
+pub const INTERNAL_NODE_RIGHT_CHILD_SIZE: usize = 4;
+pub const INTERNAL_NODE_RIGHT_CHILD_OFFSET: usize =
+    INTERNAL_NODE_NUM_KEYS_OFFSET + INTERNAL_NODE_NUM_KEYS_SIZE;
+pub const INTERNAL_NODE_HEADER_SIZE: usize =
+    COMMON_NODE_HEADER_SIZE + INTERNAL_NODE_NUM_KEYS_SIZE + INTERNAL_NODE_RIGHT_CHILD_SIZE;
+
+// Internal Node Body Layout
+pub const INTERNAL_NODE_KEY_SIZE: usize = 4;
+pub const INTERNAL_NODE_CHILD_SIZE: usize = 4;
+pub const INTERNAL_NODE_CELL_SIZE: usize = INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE;
+pub const INTERNAL_NODE_MAX_KEYS: usize = 3; // Kept small for testing tree branching

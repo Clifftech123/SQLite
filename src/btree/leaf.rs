@@ -1,4 +1,22 @@
-//! B-tree leaf-node layout and operations.
-//!
-//! Put leaf constants, cell access, initialization, lookup, insertion, and
-//! leaf splitting here.
+use crate::btree::node::COMMON_NODE_HEADER_SIZE;
+use crate::config::PAGE_SIZE;
+use crate::row::ROW_SIZE;
+
+// Leaf Node Header Layout
+pub const LEAF_NODE_NUM_CELLS_SIZE: usize = 4;
+pub const LEAF_NODE_NUM_CELLS_OFFSET: usize = COMMON_NODE_HEADER_SIZE;
+pub const LEAF_NODE_NEXT_LEAF_SIZE: usize = 4;
+pub const LEAF_NODE_NEXT_LEAF_OFFSET: usize = LEAF_NODE_NUM_CELLS_OFFSET + LEAF_NODE_NUM_CELLS_SIZE;
+pub const LEAF_NODE_HEADER_SIZE: usize =
+    COMMON_NODE_HEADER_SIZE + LEAF_NODE_NUM_CELLS_SIZE + LEAF_NODE_NEXT_LEAF_SIZE;
+
+// Leaf Node Body Layout
+pub const LEAF_NODE_KEY_SIZE: usize = 4;
+pub const LEAF_NODE_KEY_OFFSET: usize = 0;
+pub const LEAF_NODE_VALUE_SIZE: usize = ROW_SIZE;
+pub const LEAF_NODE_VALUE_OFFSET: usize = LEAF_NODE_KEY_OFFSET + LEAF_NODE_KEY_SIZE;
+pub const LEAF_NODE_CELL_SIZE: usize = LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE;
+pub const LEAF_NODE_SPACE_FOR_CELLS: usize = PAGE_SIZE - LEAF_NODE_HEADER_SIZE;
+pub const LEAF_NODE_MAX_CELLS: usize = LEAF_NODE_SPACE_FOR_CELLS / LEAF_NODE_CELL_SIZE;
+pub const LEAF_NODE_RIGHT_SPLIT_COUNT: usize = (LEAF_NODE_MAX_CELLS + 1) / 2;
+pub const LEAF_NODE_LEFT_SPLIT_COUNT: usize =(LEAF_NODE_MAX_CELLS + 1) - LEAF_NODE_RIGHT_SPLIT_COUNT;
