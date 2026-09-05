@@ -1,3 +1,10 @@
-//! SQL statement data types.
-//!
-//! Put the Statement enum and the data carried by each statement here.
+//! Structured commands produced by the SQL parser.
+
+use crate::row::Row;
+
+/// SQL operations currently supported by the database.
+#[derive(Debug)]
+pub enum Statement {
+    Insert(Row),
+    Select,
+}

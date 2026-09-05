@@ -1,7 +1,11 @@
+//! A database row and its fixed-width on-disk representation.
+
 use std::fmt;
 
 use crate::config::COLUMN_EMAIL_SIZE;
 use crate::config::COLUMN_USERNAME_SIZE;
+
+
 
 pub const ID_SIZE: usize = 4;
 pub const USERNAME_SIZE: usize = COLUMN_USERNAME_SIZE + 1; // 33 bytes
@@ -20,6 +24,7 @@ pub struct Row {
 }
 
 impl Row {
+    /// Creates an owned row from an ID, username, and email.
     pub fn new(id: u32, username: &str, email: &str) -> Self {
         Self {
             id,
@@ -28,63 +33,72 @@ impl Row {
         }
     }
 
-    //  Serializes the Row into exact SQLite disk format (fixed 293-byte slice).
+    /// Serializes this row into the fixed-width disk format.
     pub fn serialize_into(&self, dest: &mut [u8]) {
-        assert!(
-            dest.len() >= ROW_SIZE,
-            "Destination slice too small for Row"
+        assert_has_row_space(dest, "Destination slice too small for Row");
+        write_u32(dest, ID_OFFSET, self.id);
+        write_fixed_text(
+            dest,
+            USERNAME_OFFSET,
+            USERNAME_SIZE,
+            COLUMN_USERNAME_SIZE,
+            &self.username,
         );
-
-        // 1. ID (u32, little-endian)
-        dest[ID_OFFSET..ID_OFFSET + ID_SIZE].copy_from_slice(&self.id.to_le_bytes());
-
-        // 2. Username (fixed 33 bytes null-terminated)
-        let username_bytes = self.username.as_bytes();
-        let copy_len = username_bytes.len().min(COLUMN_USERNAME_SIZE);
-        dest[USERNAME_OFFSET..USERNAME_OFFSET + copy_len]
-            .copy_from_slice(&username_bytes[..copy_len]);
-        // Zero-fill remaining buffer
-        for byte in &mut dest[USERNAME_OFFSET + copy_len..USERNAME_OFFSET + USERNAME_SIZE] {
-            *byte = 0;
-        }
-
-        // 3. Email (fixed 256 bytes null-terminated)
-        let email_bytes = self.email.as_bytes();
-        let copy_len_email = email_bytes.len().min(COLUMN_EMAIL_SIZE);
-        dest[EMAIL_OFFSET..EMAIL_OFFSET + copy_len_email]
-            .copy_from_slice(&email_bytes[..copy_len_email]);
-        for byte in &mut dest[EMAIL_OFFSET + copy_len_email..EMAIL_OFFSET + EMAIL_SIZE] {
-            *byte = 0;
-        }
+        write_fixed_text(
+            dest,
+            EMAIL_OFFSET,
+            EMAIL_SIZE,
+            COLUMN_EMAIL_SIZE,
+            &self.email,
+        );
     }
 
-    // Deserializes a Row from a 293-byte disk slice safely.
-
+    /// Reads one row from its fixed-width disk representation.
     pub fn deserialize_from(src: &[u8]) -> Self {
-        assert!(src.len() >= ROW_SIZE, "Source slice too small for Row");
-
-        let id = u32::from_le_bytes(src[ID_OFFSET..ID_OFFSET + ID_SIZE].try_into().unwrap());
-
-        let username_slice = &src[USERNAME_OFFSET..USERNAME_OFFSET + USERNAME_SIZE];
-        let username_len = username_slice
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(COLUMN_USERNAME_SIZE);
-        let username = String::from_utf8_lossy(&username_slice[..username_len]).to_string();
-
-        let email_slice = &src[EMAIL_OFFSET..EMAIL_OFFSET + EMAIL_SIZE];
-        let email_len = email_slice
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(COLUMN_EMAIL_SIZE);
-        let email = String::from_utf8_lossy(&email_slice[..email_len]).to_string();
-
+        assert_has_row_space(src, "Source slice too small for Row");
         Row {
-            id,
-            username,
-            email,
+            id: read_u32(src, ID_OFFSET),
+            username: read_fixed_text(src, USERNAME_OFFSET, USERNAME_SIZE),
+            email: read_fixed_text(src, EMAIL_OFFSET, EMAIL_SIZE),
         }
     }
+}
+
+fn assert_has_row_space(bytes: &[u8], message: &str) {
+    assert!(bytes.len() >= ROW_SIZE, "{message}");
+}
+
+fn write_u32(dest: &mut [u8], offset: usize, value: u32) {
+    let end = offset + ID_SIZE;
+    dest[offset..end].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_fixed_text(
+    dest: &mut [u8],
+    offset: usize,
+    field_size: usize,
+    max_text_size: usize,
+    value: &str,
+) {
+    let bytes = value.as_bytes();
+    let copy_len = bytes.len().min(max_text_size);
+    let text_end = offset + copy_len;
+    dest[offset..text_end].copy_from_slice(&bytes[..copy_len]);
+    dest[text_end..offset + field_size].fill(0);
+}
+
+fn read_u32(src: &[u8], offset: usize) -> u32 {
+    let end = offset + ID_SIZE;
+    u32::from_le_bytes(src[offset..end].try_into().expect("invalid u32 field"))
+}
+
+fn read_fixed_text(src: &[u8], offset: usize, field_size: usize) -> String {
+    let field = &src[offset..offset + field_size];
+    let text_end = field
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(field_size - 1);
+    String::from_utf8_lossy(&field[..text_end]).into_owned()
 }
 
 impl fmt::Display for Row {
