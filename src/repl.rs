@@ -174,3 +174,104 @@ pub fn do_meta_command(input: &str, table: &mut Table) -> MetaCommandResult {
         cmd => MetaCommandResult::UnrecognizedCommand(cmd.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn temp_table(name: &str) -> (Table, std::path::PathBuf) {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "sqlite_repl_test_{name}_{}_{n}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let table = Table::open(path.to_str().unwrap()).unwrap();
+        (table, path)
+    }
+
+    struct TempGuard(std::path::PathBuf);
+    impl Drop for TempGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn exit_command_requests_exit() {
+        let (mut table, path) = temp_table("exit");
+        let _guard = TempGuard(path);
+        assert_eq!(do_meta_command(".exit", &mut table), MetaCommandResult::Exit);
+    }
+
+    #[test]
+    fn unrecognized_command_is_reported_with_its_text() {
+        let (mut table, path) = temp_table("unrecognized");
+        let _guard = TempGuard(path);
+        assert_eq!(
+            do_meta_command(".bogus", &mut table),
+            MetaCommandResult::UnrecognizedCommand(".bogus".to_string())
+        );
+    }
+
+    #[test]
+    fn btree_command_succeeds_on_an_empty_table() {
+        let (mut table, path) = temp_table("btree");
+        let _guard = TempGuard(path);
+        assert_eq!(
+            do_meta_command(".btree", &mut table),
+            MetaCommandResult::Success
+        );
+    }
+
+    #[test]
+    fn constants_command_succeeds() {
+        let (mut table, path) = temp_table("constants");
+        let _guard = TempGuard(path);
+        assert_eq!(
+            do_meta_command(".constants", &mut table),
+            MetaCommandResult::Success
+        );
+    }
+
+    #[test]
+    fn read_command_returns_false_at_end_of_input() {
+        let (mut table, path) = temp_table("read_eof");
+        let _guard = TempGuard(path);
+        let mut input: &[u8] = b"";
+        let mut output = Vec::new();
+        assert!(!read_command(&mut input, &mut output, &mut table));
+    }
+
+    #[test]
+    fn read_command_continues_on_a_blank_line() {
+        let (mut table, path) = temp_table("read_blank");
+        let _guard = TempGuard(path);
+        let mut input: &[u8] = b"\n";
+        let mut output = Vec::new();
+        assert!(read_command(&mut input, &mut output, &mut table));
+    }
+
+    #[test]
+    fn read_command_runs_an_insert_and_reports_success() {
+        let (mut table, path) = temp_table("read_insert");
+        let _guard = TempGuard(path);
+        let mut input: &[u8] = b"insert 1 alice alice@example.com\n";
+        let mut output = Vec::new();
+        assert!(read_command(&mut input, &mut output, &mut table));
+        let cursor = table.start();
+        assert!(!cursor.end_of_table);
+    }
+
+    #[test]
+    fn read_command_reports_a_syntax_error_for_garbage_input() {
+        let (mut table, path) = temp_table("read_garbage");
+        let _guard = TempGuard(path);
+        let mut input: &[u8] = b"gibberish\n";
+        let mut output = Vec::new();
+        assert!(read_command(&mut input, &mut output, &mut table));
+    }
+}

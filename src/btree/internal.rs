@@ -169,3 +169,136 @@ pub fn internal_node_find(pager: &mut Pager, page_num: u32, key: u32) -> (u32, u
         NodeType::Internal => internal_node_find(pager, child_num, key),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::btree::leaf::{initialize_leaf_node, set_leaf_node_key, set_leaf_node_num_cells};
+    use crate::btree::node::is_node_root;
+    use crate::storage::page::new_page;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// A Pager backed by a fresh, auto-deleted temp file.
+    struct TempPager {
+        pager: Pager,
+        path: std::path::PathBuf,
+    }
+
+    impl TempPager {
+        fn new(name: &str) -> Self {
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "sqlite_internal_test_{name}_{}_{n}.db",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+            let pager = Pager::open(path.to_str().unwrap()).unwrap();
+            Self { pager, path }
+        }
+    }
+
+    impl Drop for TempPager {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    #[test]
+    fn num_keys_round_trips() {
+        let mut page = new_page();
+        set_internal_node_num_keys(&mut page, 2);
+        assert_eq!(internal_node_num_keys(&page), 2);
+    }
+
+    #[test]
+    fn right_child_round_trips() {
+        let mut page = new_page();
+        set_internal_node_right_child(&mut page, 5);
+        assert_eq!(internal_node_right_child(&page), 5);
+    }
+
+    #[test]
+    fn initialize_internal_node_sets_defaults() {
+        let mut page = new_page();
+        initialize_internal_node(&mut page);
+        assert_eq!(get_node_type(&page), NodeType::Internal);
+        assert!(!is_node_root(&page));
+        assert_eq!(internal_node_num_keys(&page), 0);
+        assert_eq!(internal_node_right_child(&page), INVALID_PAGE_NUM);
+    }
+
+    #[test]
+    fn child_and_key_round_trip() {
+        let mut page = new_page();
+        initialize_internal_node(&mut page);
+        set_internal_node_num_keys(&mut page, 2);
+        set_internal_node_child(&mut page, 0, 10);
+        set_internal_node_key(&mut page, 0, 100);
+        set_internal_node_child(&mut page, 1, 20);
+        set_internal_node_key(&mut page, 1, 200);
+        set_internal_node_right_child(&mut page, 30);
+
+        assert_eq!(internal_node_child(&page, 0), 10);
+        assert_eq!(internal_node_key(&page, 0), 100);
+        assert_eq!(internal_node_child(&page, 1), 20);
+        assert_eq!(internal_node_key(&page, 1), 200);
+        // Index == num_keys reads the special right-child slot.
+        assert_eq!(internal_node_child(&page, 2), 30);
+    }
+
+    #[test]
+    fn find_child_returns_leftmost_key_greater_or_equal() {
+        let mut page = new_page();
+        initialize_internal_node(&mut page);
+        set_internal_node_num_keys(&mut page, 3);
+        set_internal_node_key(&mut page, 0, 10);
+        set_internal_node_key(&mut page, 1, 20);
+        set_internal_node_key(&mut page, 2, 30);
+
+        assert_eq!(internal_node_find_child(&page, 5), 0);
+        assert_eq!(internal_node_find_child(&page, 10), 0);
+        assert_eq!(internal_node_find_child(&page, 15), 1);
+        assert_eq!(internal_node_find_child(&page, 30), 2);
+        // Greater than every key: belongs under the implicit right child.
+        assert_eq!(internal_node_find_child(&page, 999), 3);
+    }
+
+    #[test]
+    fn internal_node_find_descends_to_the_correct_leaf() {
+        let mut tp = TempPager::new("find_descend");
+
+        // Page 1: leaf with keys [1, 2]
+        let leaf_a = tp.pager.get_page(1);
+        initialize_leaf_node(leaf_a);
+        set_leaf_node_num_cells(leaf_a, 2);
+        set_leaf_node_key(leaf_a, 0, 1);
+        set_leaf_node_key(leaf_a, 1, 2);
+
+        // Page 2: leaf with keys [5, 9]
+        let leaf_b = tp.pager.get_page(2);
+        initialize_leaf_node(leaf_b);
+        set_leaf_node_num_cells(leaf_b, 2);
+        set_leaf_node_key(leaf_b, 0, 5);
+        set_leaf_node_key(leaf_b, 1, 9);
+
+        // Page 0: internal root, one key(2) splitting leaf_a | leaf_b
+        let root = tp.pager.get_page(0);
+        initialize_internal_node(root);
+        set_internal_node_num_keys(root, 1);
+        set_internal_node_child(root, 0, 1);
+        set_internal_node_key(root, 0, 2);
+        set_internal_node_right_child(root, 2);
+
+        assert_eq!(internal_node_find(&mut tp.pager, 0, 1), (1, 0));
+        assert_eq!(internal_node_find(&mut tp.pager, 0, 9), (2, 1));
+        // A key that isn't present yet still returns a sorted insertion point.
+        assert_eq!(internal_node_find(&mut tp.pager, 0, 7), (2, 1));
+    }
+
+    // Note: internal_node_child's sentinel and bounds checks call
+    // process::exit(1) rather than panicking, so they aren't exercised here
+    // — doing so would terminate the whole test binary instead of failing
+    // just this test.
+}

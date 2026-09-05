@@ -81,3 +81,69 @@ pub fn get_node_max_key(pager: &mut Pager, page_num: u32) -> u32 {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::btree::leaf::{initialize_leaf_node, set_leaf_node_key, set_leaf_node_num_cells};
+    use crate::storage::page::new_page;
+
+    #[test]
+    fn node_type_round_trips() {
+        let mut page = new_page();
+        set_node_type(&mut page, NodeType::Internal);
+        assert_eq!(get_node_type(&page), NodeType::Internal);
+        set_node_type(&mut page, NodeType::Leaf);
+        assert_eq!(get_node_type(&page), NodeType::Leaf);
+    }
+
+    #[test]
+    fn node_type_from_byte() {
+        assert_eq!(NodeType::from(0u8), NodeType::Internal);
+        assert_eq!(NodeType::from(1u8), NodeType::Leaf);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unknown node type")]
+    fn node_type_from_invalid_byte_panics() {
+        let _ = NodeType::from(2u8);
+    }
+
+    #[test]
+    fn root_flag_round_trips() {
+        let mut page = new_page();
+        assert!(!is_node_root(&page));
+        set_node_root(&mut page, true);
+        assert!(is_node_root(&page));
+        set_node_root(&mut page, false);
+        assert!(!is_node_root(&page));
+    }
+
+    #[test]
+    fn parent_pointer_round_trips() {
+        let mut page = new_page();
+        set_node_parent(&mut page, 12345);
+        assert_eq!(get_node_parent(&page), 12345);
+    }
+
+    #[test]
+    fn get_node_max_key_reads_last_leaf_cell() {
+        let mut pager_page = new_page();
+        initialize_leaf_node(&mut pager_page);
+        set_leaf_node_num_cells(&mut pager_page, 3);
+        set_leaf_node_key(&mut pager_page, 0, 1);
+        set_leaf_node_key(&mut pager_page, 1, 5);
+        set_leaf_node_key(&mut pager_page, 2, 9);
+
+        let dir = std::env::temp_dir().join(format!(
+            "sqlite_node_test_{}_{}.db",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_file(&dir);
+        let mut pager = Pager::open(dir.to_str().unwrap()).unwrap();
+        *pager.get_page(0) = *pager_page;
+        assert_eq!(get_node_max_key(&mut pager, 0), 9);
+        let _ = std::fs::remove_file(&dir);
+    }
+}

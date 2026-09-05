@@ -120,3 +120,118 @@ impl Drop for Pager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// A unique, auto-deleted database file path for one test.
+    struct TempDbFile(std::path::PathBuf);
+
+    impl TempDbFile {
+        fn new(name: &str) -> Self {
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "sqlite_pager_test_{name}_{}_{n}.db",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+            Self(path)
+        }
+
+        fn path(&self) -> &str {
+            self.0.to_str().expect("temp path must be valid UTF-8")
+        }
+    }
+
+    impl Drop for TempDbFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn open_creates_an_empty_new_file() {
+        let file = TempDbFile::new("open_empty");
+        let pager = Pager::open(file.path()).expect("open should succeed");
+        assert_eq!(pager.num_pages, 0);
+    }
+
+    #[test]
+    fn open_rejects_a_file_with_a_partial_page() {
+        let file = TempDbFile::new("open_partial");
+        std::fs::write(file.path(), vec![0u8; PAGE_SIZE + 10]).unwrap();
+        let result = Pager::open(file.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_page_returns_a_zeroed_page_for_new_pages() {
+        let file = TempDbFile::new("get_page_zeroed");
+        let mut pager = Pager::open(file.path()).unwrap();
+        let page = pager.get_page(0);
+        assert!(page.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn get_page_grows_num_pages() {
+        let file = TempDbFile::new("get_page_grows");
+        let mut pager = Pager::open(file.path()).unwrap();
+        assert_eq!(pager.num_pages, 0);
+        pager.get_page(2);
+        assert_eq!(pager.num_pages, 3);
+    }
+
+    #[test]
+    fn get_page_caches_writes_until_flushed() {
+        let file = TempDbFile::new("get_page_caches");
+        let mut pager = Pager::open(file.path()).unwrap();
+        pager.get_page(0)[0] = 42;
+        assert_eq!(pager.get_page(0)[0], 42);
+    }
+
+    #[test]
+    fn flush_persists_a_page_to_disk() {
+        let file = TempDbFile::new("flush_persists");
+        {
+            let mut pager = Pager::open(file.path()).unwrap();
+            pager.get_page(0)[0] = 99;
+            pager.flush(0).expect("flush should succeed");
+        }
+        let mut reopened = Pager::open(file.path()).unwrap();
+        assert_eq!(reopened.get_page(0)[0], 99);
+    }
+
+    #[test]
+    fn drop_flushes_all_pages_automatically() {
+        let file = TempDbFile::new("drop_flushes");
+        {
+            let mut pager = Pager::open(file.path()).unwrap();
+            pager.get_page(0)[0] = 7;
+            pager.get_page(1)[0] = 8;
+        } // Pager dropped here; Drop::drop should flush both pages.
+        let mut reopened = Pager::open(file.path()).unwrap();
+        assert_eq!(reopened.num_pages, 2);
+        assert_eq!(reopened.get_page(0)[0], 7);
+        assert_eq!(reopened.get_page(1)[0], 8);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds cache limit")]
+    fn get_page_beyond_cache_limit_panics() {
+        let file = TempDbFile::new("get_page_oob");
+        let mut pager = Pager::open(file.path()).unwrap();
+        pager.get_page(TABLE_MAX_PAGES as u32);
+    }
+
+    #[test]
+    fn flush_beyond_cache_limit_returns_error() {
+        let file = TempDbFile::new("flush_oob");
+        let mut pager = Pager::open(file.path()).unwrap();
+        let result = pager.flush(TABLE_MAX_PAGES as u32);
+        assert!(result.is_err());
+    }
+}
